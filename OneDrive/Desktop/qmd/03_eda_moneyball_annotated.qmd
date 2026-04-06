@@ -1,0 +1,302 @@
+---
+title: "Moneyball EDA: On-Base Skill, Run Creation, and Wins (Annotated)"
+format:
+  html:
+    toc: true
+    number-sections: false
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Ghid de citire
+
+Acest fișier este partea „poveste + dovezi” a proiectului.
+
+Aici demonstrăm ideea Moneyball:
+
+- `OBP` și `SLG` ajută la producerea de run-uri;
+- run-urile marcate și prevenite influențează victoriile;
+- Oakland 2001-2002 este un exemplu interesant în acest context.
+
+Ca să-l înțelegi ușor:
+
+- urmărești mai întâi ce variabile sunt puse una contra alteia;
+- apoi te uiți la linia de trend și la corelație;
+- la final citești interpretarea și vezi ce concluzie susține graficul.
+
+## Setup
+
+În `Setup` citim datele și pregătim două lucruri:
+
+- o coloană care marchează Oakland 2001-2002;
+- o funcție ajutătoare pentru scatter plot-uri cu linie de regresie și corelație.
+
+```{r}
+# Save the data file path in a variable.
+data_source <- "baseball.csv"
+
+# Load the CSV into a data frame named `baseball`.
+baseball <- read.csv(data_source, stringsAsFactors = FALSE)
+
+# Convert categorical columns into factors.
+baseball$Team <- as.factor(baseball$Team)
+baseball$League <- as.factor(baseball$League)
+baseball$Playoffs <- as.factor(baseball$Playoffs)
+
+# Create a logical column that identifies Oakland in 2001 and 2002.
+baseball$Oakland_0102 <- baseball$Team == "OAK" & baseball$Year %in% c(2001, 2002)
+```
+
+```{r}
+# Define a helper function to draw a scatter plot, fit a linear trend,
+# and optionally highlight selected observations.
+plot_scatter_with_lm <- function(data, xvar, yvar,
+                                 xlab = xvar,
+                                 ylab = yvar,
+                                 main = NULL,
+                                 highlight = NULL,
+                                 highlight_col = "#d7301f",
+                                 base_col = "#6baed6") {
+  # Keep only rows where both plotted variables are present.
+  complete_idx <- complete.cases(data[, c(xvar, yvar)])
+  plot_data <- data[complete_idx, ]
+
+  # Extract the x and y vectors from the filtered data.
+  x <- plot_data[[xvar]]
+  y <- plot_data[[yvar]]
+
+  # Fit a simple linear regression line.
+  fit <- lm(y ~ x)
+
+  # Compute the Pearson correlation between x and y.
+  r_value <- cor(x, y)
+
+  # Create default aesthetics for all points.
+  point_col <- rep(base_col, nrow(plot_data))
+  point_pch <- rep(16, nrow(plot_data))
+  point_cex <- rep(0.8, nrow(plot_data))
+
+  # If a highlight vector is provided, update those points' appearance.
+  if (!is.null(highlight)) {
+    highlight_vals <- highlight[complete_idx]
+    point_col[highlight_vals] <- highlight_col
+    point_pch[highlight_vals] <- 19
+    point_cex[highlight_vals] <- 1.2
+  }
+
+  # Draw the scatter plot.
+  plot(x, y,
+       pch = point_pch,
+       col = point_col,
+       cex = point_cex,
+       xlab = xlab,
+       ylab = ylab,
+       main = main)
+
+  # Add the fitted regression line.
+  abline(fit, col = "#08519c", lwd = 2)
+
+  # Create the text label that shows the Pearson correlation.
+  legend_text <- paste0("Pearson r = ", format(round(r_value, 3), nsmall = 3))
+
+  # Read the current plot limits so the text can be placed inside the panel.
+  usr <- par("usr")
+
+  # Add the correlation label near the upper-left corner of the plot.
+  text(x = usr[1] + 0.04 * (usr[2] - usr[1]),
+       y = usr[4] - 0.06 * (usr[4] - usr[3]),
+       labels = legend_text,
+       adj = c(0, 1),
+       cex = 0.9)
+
+  # Return useful objects invisibly so they can be saved without printing.
+  invisible(list(correlation = r_value, model = fit, data = plot_data))
+}
+```
+
+## Which Offensive Metric Best Predicts Wins?
+
+Aici comparăm trei statistici ofensive:
+
+- `OBP`
+- `SLG`
+- `BA`
+
+Scopul este să vedem care dintre ele este mai strâns legată de `W`.
+
+The classic Moneyball question is whether some offensive measures are more informative about winning than others. The next set of plots compares `OBP`, `SLG`, and `BA` against total season wins.
+
+```{r}
+# Save current plotting settings.
+old_par <- par(no.readonly = TRUE)
+
+# Restore them automatically after plotting.
+on.exit(par(old_par), add = TRUE)
+
+# Create a 2-by-2 panel layout.
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+
+# Plot OBP against wins and highlight Oakland 2001-2002.
+obp_w <- plot_scatter_with_lm(
+  baseball, "OBP", "W",
+  xlab = "On-Base Percentage (OBP)",
+  ylab = "Wins (W)",
+  main = "OBP vs W",
+  highlight = baseball$Oakland_0102
+)
+
+# Plot SLG against wins and highlight Oakland 2001-2002.
+slg_w <- plot_scatter_with_lm(
+  baseball, "SLG", "W",
+  xlab = "Slugging Percentage (SLG)",
+  ylab = "Wins (W)",
+  main = "SLG vs W",
+  highlight = baseball$Oakland_0102
+)
+
+# Plot BA against wins.
+ba_w <- plot_scatter_with_lm(
+  baseball, "BA", "W",
+  xlab = "Batting Average (BA)",
+  ylab = "Wins (W)",
+  main = "BA vs W"
+)
+
+# Create an empty panel for a legend.
+plot.new()
+
+# Add a legend that explains colors and symbols.
+legend("center",
+       legend = c("All teams", "Oakland 2001-2002", "Linear trend"),
+       col = c("#6baed6", "#d7301f", "#08519c"),
+       pch = c(16, 19, NA),
+       lty = c(NA, NA, 1),
+       lwd = c(NA, NA, 2),
+       bty = "n")
+```
+
+Interpretation:
+
+- `OBP` has the strongest correlation with wins among the three variables (Pearson r = 0.482), so it is the best single predictor of `W` in this comparison.
+- `BA` (Pearson r = 0.409) and `SLG` (Pearson r = 0.402) are both positively related to wins, but their associations are weaker than `OBP`.
+- This supports the original Moneyball idea that getting on base captures offensive value more effectively than batting average alone.
+- Even so, none of these correlations is perfect, which means wins also depend on run prevention, sequencing, roster balance, and other season-level factors.
+
+## Runs Scored and Runs Allowed as Direct Drivers of Wins
+
+După ce comparăm statistici ofensive, trecem la mecanismul direct al victoriilor:
+
+- dacă marchezi mai multe run-uri, ai șanse mai mari să câștigi;
+- dacă primești mai puține run-uri, ai șanse mai mari să câștigi.
+
+If offensive skill matters because it creates runs, then the most direct relationship should appear between wins and the run totals themselves.
+
+```{r}
+# Save current plotting settings.
+old_par <- par(no.readonly = TRUE)
+
+# Restore them automatically after plotting.
+on.exit(par(old_par), add = TRUE)
+
+# Create a one-row, two-column plot layout.
+par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+
+# Plot runs scored against wins.
+rs_w <- plot_scatter_with_lm(
+  baseball, "RS", "W",
+  xlab = "Runs Scored (RS)",
+  ylab = "Wins (W)",
+  main = "RS vs W"
+)
+
+# Plot runs allowed against wins.
+ra_w <- plot_scatter_with_lm(
+  baseball, "RA", "W",
+  xlab = "Runs Allowed (RA)",
+  ylab = "Wins (W)",
+  main = "RA vs W"
+)
+```
+
+Interpretation:
+
+- `RS` is positively associated with wins (Pearson r = 0.512): teams that score more runs usually win more games.
+- `RA` is negatively associated with wins (Pearson r = -0.532): teams that allow fewer runs usually win more games.
+- The slightly stronger absolute correlation for `RA` suggests run prevention is at least as important as run creation in explaining season win totals.
+- This is the core accounting identity behind baseball success: wins emerge from the balance between scoring and preventing runs.
+
+## The Moneyball Chain: `OBP` and `SLG` Lead to `RS`, Which Leads to `W`
+
+Aceasta este secțiunea-cheie din punct de vedere conceptual.
+
+Lanțul logic este:
+
+- jucătorii ajung pe bază și lovesc puternic;
+- asta produce `RS`;
+- iar `RS` contribuie la `W`.
+
+The central Moneyball claim is not only that offensive skills matter, but that they matter because they translate into run production.
+
+```{r}
+# Save current plotting settings.
+old_par <- par(no.readonly = TRUE)
+
+# Restore them when the plotting is done.
+on.exit(par(old_par), add = TRUE)
+
+# Create another two-panel layout.
+par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+
+# Plot OBP against runs scored.
+obp_rs <- plot_scatter_with_lm(
+  baseball, "OBP", "RS",
+  xlab = "On-Base Percentage (OBP)",
+  ylab = "Runs Scored (RS)",
+  main = "OBP vs RS"
+)
+
+# Plot SLG against runs scored.
+slg_rs <- plot_scatter_with_lm(
+  baseball, "SLG", "RS",
+  xlab = "Slugging Percentage (SLG)",
+  ylab = "Runs Scored (RS)",
+  main = "SLG vs RS"
+)
+```
+
+Interpretation:
+
+- `OBP` has an extremely strong positive relationship with run scoring (Pearson r = 0.901), which strongly supports the idea that getting on base is a direct engine of offensive production.
+- `SLG` is also extremely strongly related to `RS` (Pearson r = 0.919), and in this dataset it is marginally stronger than `OBP` as a predictor of runs scored.
+- Putting the pieces together: `OBP` and `SLG` help explain `RS`, and `RS` in turn helps explain `W`.
+- The key Moneyball nuance is that `OBP` stands out more clearly when the target is wins, not just runs, because batting average misses walks and therefore misses part of the path from offensive events to victories.
+
+## Oakland 2001-2002 in the Moneyball Plots
+
+Aici facem legătura dintre analiză și povestea Moneyball.
+
+Important:
+
+- datasetul ne permite să vedem dacă Oakland era peste linia medie de performanță;
+- dar nu ne permite să dovedim complet ideea de „per dollar”, pentru că nu avem payroll.
+
+The red points mark the Oakland Athletics in 2001 and 2002 on the `OBP` vs `W` and `SLG` vs `W` plots.
+
+Interpretation:
+
+- Oakland 2001 and 2002 sit well above the fitted lines, meaning they won substantially more games than the average team with similar `OBP` or `SLG`.
+- Relative to the overall `OBP`-wins relationship, Oakland overperformed by roughly 14 to 17 wins; relative to the `SLG`-wins relationship, they also overperformed by roughly 15 to 17 wins.
+- That pattern is consistent with the idea that Oakland translated strong underlying skills into unusually high win totals.
+- However, this dataset does **not** include payroll, so it cannot answer whether Oakland got more wins **per dollar** of `OBP` than average. It can only show that Oakland got more wins than typical teams with similar offensive rates.
+
+## Conclusion
+
+Concluzia acestui fișier este una foarte importantă pentru prezentare:
+
+- `OBP` este mai bun decât `BA` ca predictor pentru `W`;
+- `OBP` și `SLG` sunt strâns legate de `RS`;
+- `RS` și `RA` sunt motorul direct al victoriilor.
+
+The recreated Moneyball analysis supports the classic logic of the story. Among `OBP`, `SLG`, and `BA`, `OBP` is the strongest single predictor of wins. More fundamentally, `OBP` and `SLG` strongly predict runs scored, while both `RS` and `RA` directly shape team wins. Oakland's 2001-2002 seasons sit above the usual offensive-to-wins trend, which reinforces the idea that those teams converted their offensive profile into exceptional results, even if payroll efficiency cannot be verified from this dataset alone.

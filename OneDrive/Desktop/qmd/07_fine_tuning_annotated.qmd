@@ -1,0 +1,397 @@
+---
+title: "Tree-Based Regression Models for Predicting Wins (Annotated)"
+format:
+  html:
+    toc: true
+    number-sections: false
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Ghid de citire
+
+Acesta este cel mai tehnic fișier din proiect.
+
+Ca să-l înțelegi mai ușor, gândește-l în 6 pași:
+
+1. citim datele și pachetele;
+2. pregătim datele pentru model;
+3. facem cross-validation;
+4. căutăm cei mai buni parametri pentru Random Forest și XGBoost;
+5. evaluăm modelele pe test;
+6. vedem ce variabile au fost importante.
+
+Regula bună aici este să nu citești doar codul, ci să te întrebi permanent:
+
+- care este inputul?
+- care este ținta?
+- de ce facem acel pas înainte de modelare?
+
+## Setup
+
+În `Setup` ne asigurăm că:
+
+- avem pachetele necesare;
+- rezultatele pot fi reproduse;
+- datele sunt citite corect pentru modelare.
+
+```{r}
+# List all packages required for this chapter.
+required_packages <- c("tidymodels", "dplyr", "ggplot2", "vip", "ranger", "xgboost")
+
+# Check which of those packages are missing on the current machine.
+missing_packages <- required_packages[!vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)]
+
+# If any packages are missing, install them from CRAN.
+if (length(missing_packages) > 0) {
+  install.packages(missing_packages, repos = "https://cloud.r-project.org")
+}
+
+# Load the modelling and plotting packages.
+library(tidymodels)
+library(dplyr)
+library(ggplot2)
+library(vip)
+
+# Tell tidymodels to prefer its own versions of overlapping functions.
+tidymodels_prefer()
+
+# Set a random seed so results are reproducible.
+set.seed(2026)
+
+# Store the CSV path in a variable.
+data_source <- "baseball.csv"
+
+# Read the data and convert categorical variables to factors.
+baseball <- read.csv(data_source, stringsAsFactors = FALSE) |>
+  mutate(
+    League = factor(League),
+    Playoffs = factor(Playoffs)
+  )
+```
+
+## Data Preparation
+
+Aceasta este una dintre cele mai importante secțiuni.
+
+Aici decidem:
+
+- ce coloane intră în model;
+- ce coloane se elimină;
+- cum tratăm valorile lipsă;
+- cum transformăm predictorii.
+
+We predict season wins (`W`) using season-level performance statistics while removing identifier and post-hoc columns that should not be used as predictors.
+
+```{r}
+# Split the data into training and testing sets.
+# 75% of rows go to training and 25% to testing.
+win_split <- initial_split(baseball, prop = 0.75)
+train_data <- training(win_split)
+test_data <- testing(win_split)
+
+# Define a preprocessing recipe for predicting W.
+win_recipe <- recipe(W ~ ., data = train_data) |>
+  # Remove identifier and leakage-prone variables.
+  step_rm(Team, RankSeason, RankPlayoffs, Playoffs) |>
+  # Convert League into dummy/indicator columns.
+  step_dummy(League) |>
+  # Fill missing OOBP values using the training median.
+  step_impute_median(OOBP) |>
+  # Fill missing OSLG values using the training median.
+  step_impute_median(OSLG) |>
+  # Remove predictors with zero variance.
+  step_zv(all_predictors()) |>
+  # Standardize numeric predictors to mean 0 and sd 1.
+  step_normalize(all_numeric_predictors())
+
+# Print the recipe summary.
+win_recipe
+```
+
+Notes:
+
+- `Team` is an identifier rather than a generalizable performance feature.
+- `RankSeason`, `RankPlayoffs`, and `Playoffs` are post-hoc or target-adjacent variables and should not be used to predict wins.
+- `League` is encoded with `step_dummy()`.
+- `OOBP` and `OSLG` are imputed using median values estimated from the training data only.
+
+## Cross-Validation
+
+Cross-validation este pasul care ne ajută să alegem parametrii fără să folosim setul final de test.
+
+We use 5-fold cross-validation on the training set to tune the models.
+
+```{r}
+# Reset the seed before making folds.
+set.seed(2026)
+
+# Create 5-fold cross-validation resamples from the training set.
+cv_folds <- vfold_cv(train_data, v = 5)
+
+# Print the fold object.
+cv_folds
+```
+
+```{r}
+# Define the performance metrics we want to track.
+reg_metrics <- metric_set(rmse, mae, rsq)
+```
+
+## Random Forest Tuning
+
+Aici definim modelul Random Forest și îl reglăm.
+
+Parametrii principali sunt:
+
+- `mtry` = câți predictori încearcă la fiecare split;
+- `min_n` = numărul minim de observații într-un nod.
+
+The random forest model tunes `mtry` and `min_n` over a regular 3 x 3 grid.
+
+```{r}
+# Define a random forest regression model with tunable parameters.
+rf_spec <- rand_forest(
+  mode = "regression",
+  trees = 1000,
+  mtry = tune(),
+  min_n = tune()
+) |>
+  # Use the ranger engine and request permutation importance.
+  set_engine("ranger", importance = "permutation")
+
+# Combine the recipe and model into one workflow.
+rf_wf <- workflow() |>
+  add_recipe(win_recipe) |>
+  add_model(rf_spec)
+
+# Extract the tunable parameters and finalize them using the training data.
+rf_params <- extract_parameter_set_dials(rf_wf) |>
+  finalize(train_data)
+
+# Build a regular grid with 3 levels for each tuning parameter.
+rf_grid <- grid_regular(rf_params, levels = 3)
+
+# Print the grid.
+rf_grid
+```
+
+```{r}
+# Reset the seed for reproducible tuning.
+set.seed(2026)
+
+# Tune the random forest over the cross-validation folds.
+rf_tuned <- tune_grid(
+  rf_wf,
+  resamples = cv_folds,
+  grid = rf_grid,
+  metrics = reg_metrics
+)
+
+# Select the best parameter combination according to RMSE.
+rf_best <- select_best(rf_tuned, metric = "rmse")
+
+# Print the best tuning result.
+rf_best
+```
+
+## XGBoost Tuning
+
+Aici facem același lucru pentru XGBoost, dar modelul este mai flexibil și are mai mulți parametri de reglat.
+
+The XGBoost model tunes `learn_rate`, `tree_depth`, and `mtry` with a random grid of 20 combinations.
+
+```{r}
+# Define a boosted tree regression model with tunable parameters.
+xgb_spec <- boost_tree(
+  mode = "regression",
+  trees = 1000,
+  learn_rate = tune(),
+  tree_depth = tune(),
+  mtry = tune(),
+  min_n = 2,
+  loss_reduction = 0,
+  sample_size = 1
+) |>
+  # Use the xgboost engine.
+  set_engine("xgboost")
+
+# Create the workflow for the boosted tree model.
+xgb_wf <- workflow() |>
+  add_recipe(win_recipe) |>
+  add_model(xgb_spec)
+
+# Extract and finalize the tunable parameter set.
+xgb_params <- extract_parameter_set_dials(xgb_wf) |>
+  finalize(train_data)
+
+# Reset the seed before generating the random tuning grid.
+set.seed(2026)
+
+# Create 20 random parameter combinations.
+xgb_grid <- grid_random(xgb_params, size = 20)
+
+# Print the grid.
+xgb_grid
+```
+
+```{r}
+# Reset the seed for reproducible tuning.
+set.seed(2026)
+
+# Tune XGBoost across the cross-validation folds.
+xgb_tuned <- tune_grid(
+  xgb_wf,
+  resamples = cv_folds,
+  grid = xgb_grid,
+  metrics = reg_metrics
+)
+
+# Select the best parameter set according to RMSE.
+xgb_best <- select_best(xgb_tuned, metric = "rmse")
+
+# Print the best parameters.
+xgb_best
+```
+
+## Final Evaluation on the Test Set
+
+Acum folosim pentru prima dată setul de test.
+
+Foarte important:
+
+- tuningul se face pe train + CV;
+- evaluarea finală se face pe test.
+
+After tuning, each workflow is finalized on the training data and evaluated on the held-out test set.
+
+```{r}
+# Insert the best RF parameters into the workflow.
+final_rf_wf <- finalize_workflow(rf_wf, rf_best)
+
+# Insert the best XGBoost parameters into the workflow.
+final_xgb_wf <- finalize_workflow(xgb_wf, xgb_best)
+
+# Fit the final RF workflow on the training set and evaluate on the test set.
+rf_last_fit <- last_fit(final_rf_wf, split = win_split, metrics = reg_metrics)
+
+# Fit the final XGBoost workflow on the training set and evaluate on the test set.
+xgb_last_fit <- last_fit(final_xgb_wf, split = win_split, metrics = reg_metrics)
+
+# Collect the evaluation metrics from both models into one table.
+evaluation_table <- bind_rows(
+  collect_metrics(rf_last_fit) |> mutate(model = "Random Forest"),
+  collect_metrics(xgb_last_fit) |> mutate(model = "XGBoost")
+) |>
+  select(model, .metric, .estimate) |>
+  arrange(.metric, model)
+
+# Print the evaluation table.
+evaluation_table
+```
+
+```{r}
+# Collect predictions from both final models and combine them.
+prediction_results <- bind_rows(
+  collect_predictions(rf_last_fit) |> mutate(model = "Random Forest"),
+  collect_predictions(xgb_last_fit) |> mutate(model = "XGBoost")
+)
+
+# Plot actual wins against predicted wins.
+ggplot(prediction_results, aes(x = W, y = .pred)) +
+  geom_point(alpha = 0.75, colour = "#3182bd") +
+  geom_abline(intercept = 0, slope = 1, colour = "#cb181d", linetype = "dashed") +
+  facet_wrap(~ model) +
+  labs(
+    title = "Predicted vs Actual Wins on the Test Set",
+    x = "Actual wins",
+    y = "Predicted wins"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+Interpretation:
+
+- RMSE is the primary tuning metric, while MAE and R^2 provide complementary views of predictive quality.
+- A strong model should produce predictions clustered near the 45-degree reference line in the scatter plot.
+- Any visible bias at the extremes would indicate difficulty predicting very weak or very strong teams.
+
+## Variable Importance
+
+După ce vedem cât de bun e modelul, vrem să înțelegem și **de ce** prezice bine.
+
+Aici apare ideea de importanță a variabilelor:
+
+- ce predictori au influențat cel mai mult modelul;
+- dacă domină `RS` și `RA`;
+- sau dacă și `OBP` / `SLG` rămân importante.
+
+We now inspect which predictors each tuned model relies on most heavily.
+
+```{r}
+# Fit the finalized RF workflow on the full training data.
+rf_fit_train <- fit(final_rf_wf, data = train_data)
+
+# Fit the finalized XGBoost workflow on the full training data.
+xgb_fit_train <- fit(final_xgb_wf, data = train_data)
+
+# Compute variable importance for the RF model.
+rf_vi <- vip::vi(extract_fit_parsnip(rf_fit_train)$fit) |>
+  mutate(model = "Random Forest")
+
+# Compute variable importance for the XGBoost model.
+xgb_vi <- vip::vi(extract_fit_parsnip(xgb_fit_train)$fit) |>
+  mutate(model = "XGBoost")
+
+# Combine both importance tables and keep the top 10 variables for each model.
+combined_vi <- bind_rows(rf_vi, xgb_vi) |>
+  group_by(model) |>
+  slice_max(order_by = Importance, n = 10, with_ties = FALSE) |>
+  ungroup()
+
+# Print the combined importance table.
+combined_vi
+```
+
+```{r}
+# Reorder variables within each model for clearer plotting.
+combined_vi_plot <- combined_vi |>
+  arrange(model, desc(Importance)) |>
+  mutate(
+    variable_model = paste(model, Variable, sep = " | "),
+    variable_model = factor(variable_model, levels = rev(unique(variable_model)))
+  )
+
+# Draw the importance plot for both models.
+ggplot(combined_vi_plot, aes(x = variable_model, y = Importance, fill = model)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  facet_wrap(~ model, scales = "free_y") +
+  scale_x_discrete(labels = function(x) sub("^.* \\| ", "", x)) +
+  labs(
+    title = "Top 10 Variable Importance Features by Model",
+    x = NULL,
+    y = "Importance"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+Interpretation:
+
+- In most reasonable tree-based models for this dataset, `RS` and `RA` should rank very highly because they are the most direct summaries of performance that drives wins.
+- `OBP` and `SLG` may still appear among the top features, especially because they help explain offensive quality and run creation.
+- If opponent statistics such as `OOBP` and `OSLG` rank highly, that would reinforce the importance of defensive prevention in season success.
+- Comparing the two importance plots helps reveal whether the models agree on the same baseball story or emphasize different pathways.
+
+## Conclusion
+
+Concluzia de reținut din acest fișier:
+
+- am construit două modele de regresie pentru `W`;
+- le-am reglat corect prin cross-validation;
+- le-am evaluat pe un set separat;
+- apoi am interpretat ce variabile contează cel mai mult.
+
+This modelling workflow uses a clean train/test split, consistent preprocessing, and cross-validated tuning to compare two tree-based regression models for wins. The final evaluation shows how accurately each model predicts held-out team seasons, while the importance analysis helps connect model performance back to baseball logic. In general, we expect direct run measures such as `RS` and `RA` to dominate, with offensive process metrics like `OBP` and `SLG` still contributing meaningful predictive signal.

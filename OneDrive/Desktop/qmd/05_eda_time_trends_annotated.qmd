@@ -1,0 +1,204 @@
+---
+title: "Time Trends and League Comparisons (Annotated)"
+format:
+  html:
+    toc: true
+    number-sections: false
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Ghid de citire
+
+Acest fișier răspunde la întrebarea: **cum s-a schimbat baseball-ul în timp?**
+
+Mai exact:
+
+- cum au evoluat statisticile ofensive;
+- cum s-a schimbat mediul de scoring;
+- dacă American League și National League arată diferit;
+- dacă relația dintre `OBP` și `W` se păstrează în ambele ligi.
+
+## Setup
+
+În `Setup` încărcăm pachetele și citim datasetul, iar `League` este transformată în factor pentru comparațiile între ligi.
+
+```{r}
+# Load the packages used for data manipulation and plotting.
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# Save the dataset path in a variable.
+data_source <- "baseball.csv"
+
+# Load the CSV file and convert League to a factor.
+baseball <- read.csv(data_source, stringsAsFactors = FALSE) |>
+  mutate(
+    League = factor(League)
+  )
+```
+
+## Mean `OBP`, `SLG`, `BA`, and `W` Over Time
+
+Aici urmărim tendințe istorice pe sezon.
+
+Observația importantă este că mediul ofensiv se poate schimba mult în timp, chiar dacă media victoriilor rămâne relativ stabilă.
+
+We begin by averaging each statistic by season to reveal long-run changes in offensive profile and competitive outcomes.
+
+```{r}
+# List the features to summarize over time.
+trend_features_1 <- c("OBP", "SLG", "BA", "W")
+
+# Compute the mean of each feature for each season.
+trend_summary_1 <- baseball |>
+  group_by(Year) |>
+  summarise(across(all_of(trend_features_1), ~ mean(.x, na.rm = TRUE)), .groups = "drop") |>
+  pivot_longer(
+    cols = all_of(trend_features_1),
+    names_to = "feature",
+    values_to = "mean_value"
+  )
+
+# Plot the yearly mean trends and facet by feature.
+ggplot(trend_summary_1, aes(x = Year, y = mean_value, colour = feature)) +
+  geom_line(linewidth = 0.9) +
+  facet_wrap(~ feature, scales = "free_y", ncol = 2) +
+  scale_colour_manual(values = c("OBP" = "#1b9e77", "SLG" = "#d95f02", "BA" = "#7570b3", "W" = "#e7298a")) +
+  labs(
+    title = "Season-Level Mean Trends for OBP, SLG, BA, and Wins",
+    x = "Year",
+    y = "Mean per season"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+```
+
+Interpretation:
+
+- `OBP`, `SLG`, and `BA` all dip sharply around the late 1960s, then rise toward the high-offense environment of the late 1990s and early 2000s.
+- By 2012, offensive rates remain above the 1968 trough but below the peak reached around 1999-2000.
+- Mean `W` is almost flat over time, which is expected because league structure keeps average team wins near the same level each season.
+- The time pattern suggests baseball strategy and league environment changed much more in offensive efficiency than in average team win totals.
+
+## Mean `RS` and `RA` Over Time
+
+Această secțiune urmărește mediul de joc la nivel de run-uri.
+
+Runs scored and runs allowed summarize the game environment even more directly.
+
+```{r}
+# List the run-based features to summarize by season.
+trend_features_2 <- c("RS", "RA")
+
+# Compute season means and reshape into long format.
+trend_summary_2 <- baseball |>
+  group_by(Year) |>
+  summarise(across(all_of(trend_features_2), ~ mean(.x, na.rm = TRUE)), .groups = "drop") |>
+  pivot_longer(
+    cols = all_of(trend_features_2),
+    names_to = "feature",
+    values_to = "mean_value"
+  )
+
+# Plot the run environment over time.
+ggplot(trend_summary_2, aes(x = Year, y = mean_value, colour = feature)) +
+  geom_line(linewidth = 1) +
+  scale_colour_manual(values = c("RS" = "#3182bd", "RA" = "#de2d26")) +
+  labs(
+    title = "Mean Runs Scored and Runs Allowed by Season",
+    x = "Year",
+    y = "Mean per season",
+    colour = NULL
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+Interpretation:
+
+- `RS` and `RA` move together almost perfectly because league totals must balance across teams.
+- Run scoring falls to a pronounced low point around 1968, rises strongly into the late 1990s and 2000, then eases somewhat by 2012.
+- Relative to the late-1990s peak, modern baseball in this dataset ends in a lower-scoring environment.
+- So the long-run story is not a simple monotonic increase or decrease: run scoring cycles with the offensive context of the era.
+
+## League Comparisons with Side-by-Side Box Plots
+
+Aici comparăm cele două ligi ca distribuție, nu doar ca medie.
+
+Next we compare the American League and National League distributions for `OBP`, `SLG`, and `W`.
+
+```{r}
+# List the variables to compare across leagues.
+league_features <- c("OBP", "SLG", "W")
+
+# Reshape the data into long format for faceted box plots.
+league_long <- baseball |>
+  select(League, all_of(league_features)) |>
+  pivot_longer(
+    cols = all_of(league_features),
+    names_to = "feature",
+    values_to = "value"
+  )
+
+# Draw side-by-side box plots by league.
+ggplot(league_long, aes(x = League, y = value, fill = League)) +
+  geom_boxplot(alpha = 0.8, outlier.alpha = 0.45, na.rm = TRUE) +
+  facet_wrap(~ feature, scales = "free_y", ncol = 3) +
+  scale_fill_manual(values = c("AL" = "#6baed6", "NL" = "#fd8d3c")) +
+  labs(
+    title = "League Comparison for OBP, SLG, and Wins",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+```
+
+Interpretation:
+
+- The American League shows slightly higher central values for `OBP` and `SLG` than the National League.
+- The `W` distributions are very similar, which makes sense because both leagues must distribute wins across their teams each season.
+- Any league difference in offense appears modest rather than dramatic.
+- This suggests league context matters somewhat for offensive environment, but not enough to fundamentally change the overall win distribution.
+
+## `OBP` vs `W` Faceted by League
+
+Această secțiune verifică dacă ideea Moneyball rămâne valabilă în ambele ligi.
+
+This final plot checks whether the on-base-to-wins relationship looks similar in the two leagues.
+
+```{r}
+# Draw OBP vs wins, color by league, and split into league-specific panels.
+ggplot(baseball, aes(x = OBP, y = W, colour = League)) +
+  geom_point(alpha = 0.7, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 0.9) +
+  facet_wrap(~ League) +
+  scale_colour_manual(values = c("AL" = "#3182bd", "NL" = "#e6550d")) +
+  labs(
+    title = "OBP and Wins by League",
+    x = "On-Base Percentage (OBP)",
+    y = "Wins (W)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+```
+
+Interpretation:
+
+- Both leagues show a clear positive relationship between `OBP` and wins, reinforcing the central Moneyball logic in each competitive context.
+- The slopes look broadly similar, which suggests on-base skill matters in both leagues rather than being a league-specific effect.
+- Combined with the time trends, this indicates that offensive strategy evolves over eras, but the fundamental importance of reaching base remains stable.
+- In practical terms, the game environment changes over time, yet the connection from offensive efficiency to winning still holds.
+
+## Conclusion
+
+Ideea centrală:
+
+- baseball-ul se schimbă în timp ca mediu ofensiv;
+- diferențele dintre ligi există, dar sunt moderate;
+- relația dintre eficiența ofensivă și victorii rămâne stabilă.
+
+The time trends reveal strong shifts in baseball's offensive environment, especially the low-scoring late 1960s and the offense-heavy late 1990s and early 2000s. The American League appears slightly more offense-oriented on average, but league differences are modest compared with the broader historical swings. Overall, baseball strategy evolves with era and context, while the core relationship between offensive quality and wins remains remarkably persistent.

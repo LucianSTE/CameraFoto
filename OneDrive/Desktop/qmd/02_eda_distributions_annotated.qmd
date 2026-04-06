@@ -1,0 +1,247 @@
+---
+title: "Graphical EDA of Season Statistic Distributions (Annotated)"
+format:
+  html:
+    toc: true
+    number-sections: false
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Ghid de citire
+
+Acesta este fișierul de studiu pentru distribuțiile variabilelor.
+
+În el urmărești 3 lucruri:
+
+- ce tip de grafic folosim pentru fiecare grup de variabile;
+- ce înseamnă forma distribuției: simetrică, asimetrică, concentrată, cu outlieri;
+- cum legăm graficul de interpretare.
+
+Regula practică:
+
+- citești întâi explicația secțiunii;
+- apoi urmărești codul comentat;
+- apoi te uiți la interpretarea de la finalul secțiunii.
+
+## Setup
+
+În `Setup` citim datele și definim funcțiile ajutătoare pentru plotare.
+
+Aceste funcții există ca să evităm cod repetat atunci când desenăm mai multe histograme asemănătoare.
+
+```{r}
+# Save the dataset path in a variable so it can be reused easily.
+data_source <- "baseball.csv"
+
+# Read the CSV file into a data frame named `baseball`.
+baseball <- read.csv(data_source, stringsAsFactors = FALSE)
+
+# Convert text columns that represent categories into factors.
+baseball$Team <- as.factor(baseball$Team)
+baseball$League <- as.factor(baseball$League)
+baseball$Playoffs <- as.factor(baseball$Playoffs)
+```
+
+```{r}
+# Create a helper function that draws multiple histogram + density panels.
+plot_hist_density_panel <- function(data, features, ncol = 2, main_prefix = "") {
+  # Save the current plotting settings so they can be restored later.
+  old_par <- par(no.readonly = TRUE)
+
+  # Restore the original plotting settings when the function finishes.
+  on.exit(par(old_par))
+
+  # Compute how many rows of panels are needed.
+  nrow_panel <- ceiling(length(features) / ncol)
+
+  # Arrange the plotting area into a grid of panels.
+  par(mfrow = c(nrow_panel, ncol), mar = c(4, 4, 3, 1))
+
+  # Loop over each requested feature.
+  for (feature in features) {
+    # Remove missing values before plotting.
+    values <- na.omit(data[[feature]])
+
+    # Draw the histogram and scale it to density instead of raw counts.
+    hist(values,
+         probability = TRUE,
+         breaks = "FD",
+         col = "#9ecae1",
+         border = "white",
+         main = paste(main_prefix, feature),
+         xlab = feature,
+         ylab = "Density")
+
+    # Add a smooth density curve on top of the histogram.
+    lines(density(values), col = "#08519c", lwd = 2)
+  }
+}
+
+# Create a second helper function for histogram-only panels.
+plot_hist_panel <- function(data, features, ncol = 2, main_prefix = "") {
+  # Save current plotting settings.
+  old_par <- par(no.readonly = TRUE)
+
+  # Restore settings automatically after plotting.
+  on.exit(par(old_par))
+
+  # Compute the number of panel rows needed.
+  nrow_panel <- ceiling(length(features) / ncol)
+
+  # Define a multi-panel plotting layout.
+  par(mfrow = c(nrow_panel, ncol), mar = c(4, 4, 3, 1))
+
+  # Loop through each feature to draw its histogram.
+  for (feature in features) {
+    # Remove missing values before plotting.
+    values <- na.omit(data[[feature]])
+
+    # Draw a histogram using Freedman-Diaconis breaks.
+    hist(values,
+         breaks = "FD",
+         col = "#fdd0a2",
+         border = "white",
+         main = paste(main_prefix, feature),
+         xlab = feature,
+         ylab = "Frequency")
+  }
+}
+```
+
+## Offensive Distributions: `RS`, `OBP`, `SLG`, `BA`
+
+Aici analizăm distribuțiile variabilelor ofensive.
+
+Întrebările importante sunt:
+
+- unde este centrul distribuției;
+- cât de răspândite sunt valorile;
+- dacă există cozi lungi sau valori neobișnuite.
+
+The next figure shows faceted histograms with density curves for the main offensive variables. Each panel uses its own y-scale, so the height of the bars is interpreted within that specific statistic.
+
+```{r}
+# Store the offensive variables in a character vector.
+offensive_features <- c("RS", "OBP", "SLG", "BA")
+
+# Call the custom helper function to plot them in a panel layout.
+plot_hist_density_panel(baseball, offensive_features, ncol = 2)
+```
+
+Interpretation:
+
+- `RS` ranges from about 463 to 1009 runs, with most teams concentrated in the middle and a slightly elongated upper tail created by unusually strong offenses.
+- `OBP` ranges from roughly 0.277 to 0.373 and is fairly compact and near-symmetric, with most teams clustering close to the league-wide center.
+- `SLG` spans about 0.301 to 0.491 and looks somewhat more dispersed than `OBP`, with a mild right tail reflecting a smaller group of high-power lineups.
+- `BA` ranges from about 0.214 to 0.294 and is tightly concentrated, with a mostly unimodal shape and only modest skewness.
+
+## Defensive Distributions: `RA`, `OOBP`, `OSLG`
+
+În această secțiune facem același tip de analiză, dar pentru partea defensivă.
+
+Trebuie observat și faptul că `OOBP` și `OSLG` au valori lipsă, deci graficele folosesc doar observațiile disponibile.
+
+These histograms summarize run prevention and opponent batting quality. Because `OOBP` and `OSLG` contain missing values in the dataset, the plots use the available observations only.
+
+```{r}
+# Store the defensive variables in a character vector.
+defensive_features <- c("RA", "OOBP", "OSLG")
+
+# Draw a panel of histograms for the defensive variables.
+plot_hist_panel(baseball, defensive_features, ncol = 2)
+```
+
+Interpretation:
+
+- `RA` ranges from about 472 to 1103 runs allowed and is broadly centered near the middle of the distribution, with a noticeable upper tail for weak defensive seasons.
+- `OOBP` ranges from roughly 0.294 to 0.384 and is fairly compact, with a mostly unimodal shape and slight right-skew toward worse opponent on-base prevention.
+- `OSLG` runs from about 0.346 to 0.499 and shows moderate spread, with a distribution that is close to unimodal but somewhat stretched on the high end.
+
+## Distribution of `W` (Wins)
+
+Variabila `W` este una dintre cele mai importante din proiect, pentru că este ținta folosită mai târziu în modelare.
+
+De aceea aici ne interesează foarte clar:
+
+- intervalul de valori;
+- forma distribuției;
+- unde se află cele mai multe echipe.
+
+Wins provide a direct view of overall team performance. The histogram below includes an overlaid density curve to show the general shape of the season-win distribution.
+
+```{r}
+# Extract the wins column and remove any missing values.
+win_values <- na.omit(baseball$W)
+
+# Draw a histogram of season wins on a density scale.
+hist(win_values,
+     probability = TRUE,
+     breaks = "FD",
+     col = "#a1d99b",
+     border = "white",
+     main = "Distribution of Season Wins (W)",
+     xlab = "Wins",
+     ylab = "Density")
+
+# Add a smooth density curve over the histogram.
+lines(density(win_values), col = "#006d2c", lwd = 2)
+```
+
+Interpretation:
+
+- `W` ranges from 40 to 116 wins, so the dataset covers both very poor and elite team-seasons.
+- The middle of the distribution is concentrated around the low-80s, which is consistent with many teams finishing near .500 over a full season.
+- The shape is broadly unimodal and roughly bell-shaped, though the tails show that a smaller number of teams separate themselves clearly as top-tier or bottom-tier clubs.
+
+## Box Plots for All Numeric Features
+
+Această secțiune compară toate variabilele numerice într-un singur loc.
+
+Boxplot-urile sunt utile pentru:
+
+- comparația dispersiei;
+- identificarea outlierilor;
+- observarea diferențelor dintre variabile de tip total și variabile de tip rată.
+
+Box plots help compare spread, central tendency, and potential outliers across every numeric variable in the dataset.
+
+```{r}
+# Keep only the numeric columns in the dataset.
+numeric_data <- baseball[vapply(baseball, is.numeric, logical(1))]
+
+# Save the current plotting settings.
+old_par <- par(no.readonly = TRUE)
+
+# Restore plotting settings after this chunk finishes.
+on.exit(par(old_par), add = TRUE)
+
+# Increase the bottom margin so rotated x-axis labels fit.
+par(mar = c(10, 4, 3, 1))
+
+# Draw box plots for all numeric variables at once.
+boxplot(numeric_data,
+        las = 2,
+        col = "#dadaeb",
+        main = "Box Plots for All Numeric Features",
+        ylab = "Value")
+```
+
+Interpretation:
+
+- `RS`, `RA`, and `W` show substantial spread relative to the rate statistics, which is expected because they are season totals rather than proportions.
+- `OBP`, `SLG`, `BA`, `OOBP`, and `OSLG` have tighter boxes, indicating narrower year-to-year variation in rate-based performance.
+- Several variables display outliers, especially in run-based and ranking measures, which suggests a small number of unusually dominant or unusually weak team-seasons.
+- `G` shows very little variability, while `RankSeason` and `RankPlayoffs` are discrete by construction and therefore appear more stepped than continuous performance measures.
+
+## Conclusion
+
+Ideea principală de reținut din acest fișier este:
+
+- statisticile de tip rată sunt mai concentrate;
+- totalurile sezoniere precum `RS`, `RA` și `W` variază mai mult;
+- unele variabile au outlieri care pot conta în interpretare și modelare.
+
+These distribution plots show that the offensive and defensive rate statistics are relatively concentrated, while totals such as runs and wins vary more widely across teams and seasons. Most variables appear unimodal, but several include mild skewness or notable outliers, which is important to keep in mind when choosing transformations, detecting unusual seasons, or fitting predictive models.
